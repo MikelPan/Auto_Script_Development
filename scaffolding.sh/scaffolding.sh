@@ -35,11 +35,11 @@ source /etc/profile
 # init os
 # init os function
 init(){
-    hostnamectl set-hostname `echo $HostName`
+    hostnamectl set-hostname $1
     ip_addr=`ip a | grep eth0 | grep inet | awk '{print $2}'|cut -d / -f1`
     echo $id_addr $HOSTNAME >> /etc/hosts
     ssh-keygen -t rsa
-    for hostname in `cat /etc/hosts | sed '/dadi-saas/p' | awk '{print $2}'`
+    for hostname in `cat /etc/hosts | sed '/k8s/p' | awk '{print $2}'`
     do
         ssh-copy-id $hostname
     done 
@@ -161,14 +161,14 @@ EOF
 
 # install kubeadm
 deploy_kubeadm(){
-    k8s_version=1.15.2
+    export k8s_version=1.15.2
     cat <<EOF > /etc/yum.repos.d/kubernetes.repo
     [kubernetes]
     name=Kubernetes
     baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64
     enabled=1
-    gpgcheck=1
-    repo_gpgcheck=1
+    gpgcheck=0
+    repo_gpgcheck=0
     gpgkey=https://mirrors.aliyun.com/kubernetes/yum/doc/yum-key.gpg https://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg
 EOF
     #安装kubeadm、kubelet、kubectl,注意这里默认安装当前最新版本v1.15.2:
@@ -179,13 +179,32 @@ EOF
 # init kuberneters master
 init_kubernetes_master(){
     export InstallDir=/apps/install_k8s.sh
-    [ -d "$InstallDir" ] || mkdir $InstalllDir
+    rm -rf /var/lib/etcd/*
+    [ -d "$InstallDir" ] || mkdir -p $InstalllDir
     kubeadm config print init-defaults > /$InstallDir/kubeadm-config.yaml 
+    sed -i "/apiServer:/a\  certSANs:\n  - $(ip a | grep ens33 | grep inet | awk '{print $2}'|cut -d / -f1)\n  - 127.0.0.1\n  - apiserver.cluster.local\n  extraArgs:\n    authorization-mode: Node,RBAC" $InstallDir/kubeadm-config.yaml
+    sed -i "s/1.2.3.4/$(ip a | grep ens33 | grep inet | awk '{print $2}'|cut -d / -f1)/g" $InstallDir/kubeadm-config.yaml
+    sed -i "s@k8s.gcr.io@registry.aliyuncs.com/google_containers@g" $InstallDir/kubeadm-config.yaml
+    sed -i "/ClusterConfiguration/a\controlPlaneEndpoint: \"apiserver.cluster.local:6443\"" kubeadm-config.yaml
+    sed -i "s@v1.14.0@v1.15.2@g" $InstallDir/kubeadm-config.yaml
+    sed -i "/dnsDomain/a\  podSubnet: 10.0.0.0/16" $InstallDir/kubeadm-config.yaml
+    cat >> $InstallDir/kubeadm-config.yaml <<EOF
+    ---
+    apiVersion: kubeproxy.config.k8s.io/v1alpha1
+    kind: KubeProxyConfiguration
+    featureGates:
+      SupportIPVSProxyMode: true
+      mode: ipvs
+EOF
     kubeadm init --config=kubeadm-config.yaml --experimental-upload-certs | tee $InstallDir/kubeadm-init.log
+    echo -e "#!/bin/bash\n$(grep  '^ ' $InstallDir/kubeadm-init.log | grep kubeadm -A 3)" > $installDir/kubeadm_join_master.sh
+    echo -e "#!/bin/bash\n$(grep  '^kubeadm join' $InstallDir/kubeadm-init.log -A 2)" > $InstallDir/kubeadm_join_node.sh
 }
 
 # init kubernetes node]
 init_kubernetes_node(){
+
+    sh $InstallDir/kubeadm_join_node.sh
 }
 
 # clean kubernetes node
